@@ -1,0 +1,403 @@
+package comp303.fivehundred.engine;
+
+import java.util.LinkedList;
+import java.util.Observable;
+
+import comp303.fivehundred.ai.BasicRobot;
+import comp303.fivehundred.ai.RandomRobot;
+import comp303.fivehundred.model.Bid;
+import comp303.fivehundred.model.Hand;
+import comp303.fivehundred.model.HumanPlayer;
+import comp303.fivehundred.model.Player;
+import comp303.fivehundred.model.Trick;
+import comp303.fivehundred.util.Card;
+import comp303.fivehundred.util.CardList;
+import comp303.fivehundred.util.Deck;
+
+
+/**
+ * An engine for holding game state and running high-level game methods.
+ * @author Jake Shamash
+ */
+public class GameEngine extends Observable
+{
+	private static final int NUM_PLAYERS = 4;
+	
+	private Player[] aPlayers;			// Players in this game
+	private Trick aCurrentTrick;		// Current trick
+	private Deck aDeck;					// Deck for this game
+	private int aTurn;					// Index of player taking turn
+	private int aTrickWinner;			// Index of last player to win a trick
+	private int aDealer;				// Index of current dealer
+	private Bid[] aBids;				// Bids made in a round
+	private Bid aContract;				// Contract for the current trick
+	private int aContractHolder;		// Index of player holding the contract (highest bidder)
+	private CardList aWidow;			// Becomes discarded cards after a card exchange
+	private int aTricksPlayed;			// # Tricks played in this game
+	private int aGamesPlayed;			// Total # games played so far
+	
+	
+
+	/**
+	 * Constructs a game engine from data about the players playing the game.
+	 * Each integer in pTypes can have one of the following values:
+	 * 0 - Human player
+	 * 1 - Random AI
+	 * 2 - Basic AI
+	 * 
+	 * @param pNames An array containing the 4 player names.
+	 * @param pTypes An array containing the types of the 4 players.
+	 * @pre pNames contains exactly 4 elements.
+	 * @pre pTypes contains exactly 4 elements.
+	 * @pre Every integer in pTypes is a value between 0 and 2.
+	 */
+	public GameEngine(String[] pNames, int[] pTypes)
+	{
+		assert pNames.length == NUM_PLAYERS;
+		assert pTypes.length == NUM_PLAYERS;
+		
+		aGamesPlayed = 0;
+		aDealer = -1;
+		
+		aPlayers = new Player[NUM_PLAYERS];
+
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			switch (pTypes[i])
+			{
+				case 0:  aPlayers[i] = new HumanPlayer(pNames[i]);
+						 break;
+				case 1:  aPlayers[i] = new RandomRobot(pNames[i]);
+						 break;
+				case 2:  aPlayers[i] = new BasicRobot(pNames[i]);
+						 break;
+				default: assert pTypes[i] >= 0 && pTypes[i] <= 2;
+			}
+		}
+	}
+	
+	/**
+	 * Sets up a new game: Clears all data from previous game.
+	 */
+	public void newGame()
+	{
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			aPlayers[i].reset();
+		}
+		
+		aCurrentTrick = null;
+		aDeck = new Deck();
+		aDealer = (aDealer + 1) % NUM_PLAYERS;
+		aTurn = (aDealer + 1) % NUM_PLAYERS;		// aTurn is set to the first player bidding.
+		aBids = new Bid[NUM_PLAYERS];
+		aContract = null;
+		aContractHolder = -1;
+		aWidow = new CardList();
+		aTricksPlayed = 0;
+		aGamesPlayed++;
+	}
+	
+	/**
+	 * Initialize deck.
+	 * Initialize hands
+	 * Initialize widow
+	 * 
+	 * @pre A call to deal() must be preceded by a call to newGame().
+	 */
+	public void deal()
+	{
+		final int lCardsInHand = 10;
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			/* Give each player a ten card hand */
+			Hand h = new Hand();
+			for (int j = 0; j < lCardsInHand; j++)
+			{
+				h.add(aDeck.draw());
+			}
+			aPlayers[i].setHand(h);
+		}
+		
+		while (aDeck.size() > 0)
+		{
+			aWidow.add(aDeck.draw());
+		}
+	}
+	
+	/**
+	 * Gets each player's bid according to their bidding strategy.
+	 * Instantiates aContract with highest bid.
+	 * Note: The winner of the contract (the highest bidder) is evaluated only after
+	 * a call to exchange().
+	 */
+	public void bid()
+	{
+		int lIndex = aTurn;
+		Player lPlayer;
+		// Get the bids of every player starting from the player with index aTurn.
+		for (int i = 0; i<NUM_PLAYERS; i++)
+		{
+			lPlayer = aPlayers[lIndex];
+			aBids[lIndex] = lPlayer.selectBid(aBids, lPlayer.getHand());
+			lPlayer.setBid(aBids[lIndex]);
+			lIndex = (lIndex + 1) % 4;
+		}
+		
+		/* final int lFirstBidder = aTurn;
+		LinkedList<Bid> previousBids = new LinkedList<Bid>();
+		
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			Player curPlayer = aPlayers[(lFirstBidder + i) % 4];
+			Bid curBid = curPlayer.selectBid( (Bid[]) previousBids.toArray(), curPlayer.getHand() );
+			curPlayer.setBid(curBid);
+			previousBids.add(curBid);
+		}
+		
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			aBids[i] = aPlayers[i].getBid();
+		}
+		*/
+		aContract = Bid.max(aBids);
+	}
+	
+	/**
+	 * Highest bidder does card exchange. Note: the contract winner is only evaluated when this
+	 * method is called.
+	 * @pre !allPasses()
+	 */
+	public void exchange()
+	{
+		assert !allPasses();
+		
+		/* Get the index of the player who won the contract */
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			if (aPlayers[i].getBid().equals(aContract))
+			{
+				aContractHolder = i;
+				break;
+			}
+		}
+		
+		Player curPlayer = aPlayers[aContractHolder];
+		
+		Hand h = curPlayer.getHand();
+		for (Card c : aWidow)
+		{
+			h.add(c);
+		}
+		curPlayer.setHand(h);
+		
+		aWidow = curPlayer.selectCardsToDiscard(aBids, aContractHolder, curPlayer.getHand());
+		
+		// Contract holder leads the first trick.
+		aTurn = aContractHolder;
+	}
+	
+	/**
+	 * Asks each player to play.
+	 * Gets winning index
+	 * Updates player scores
+	 * Increments aTricksPlayed
+	 */
+	public void playTrick()
+	{
+		
+		aCurrentTrick = new Trick(aContract);
+		
+		/* Each player plays according to their strategy */
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			Player curPlayer = aPlayers[(i + aTurn) % NUM_PLAYERS];
+			Hand curHand = curPlayer.getHand();
+			Card cardPlayed = curPlayer.play(aCurrentTrick, curHand);
+			aCurrentTrick.add(cardPlayed);
+			curHand.remove(cardPlayed);
+			curPlayer.setHand(curHand);
+		}
+		
+		// SET PLAYER STATS
+		
+		// Index of player who won trick
+		aTrickWinner = (aTurn + aCurrentTrick.winnerIndex()) % NUM_PLAYERS;
+		aPlayers[aTrickWinner].incTricksWon();
+		
+		// Winner leads next trick
+		aTurn = aTrickWinner;
+		
+		aTricksPlayed++;
+		
+		setChanged();
+		notifyObservers();
+	}
+	
+	/**
+	 * Check if all players pass on the previous bid.
+	 * @return true if all players pass, false otherwise.
+	 */
+	public boolean allPasses()
+	{
+		for (int i = 0; i < NUM_PLAYERS; i++)
+		{
+			if (!aBids[i].isPass())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	/**
+	 * Called after each round. Computes the scores for each player and each team.
+	 */
+	public void computeScore()
+	{
+		/*  In a suit or no trump contract, the contractors win if they take at least as many tricks as they bid. The contractors
+			then score the appropriate amount from the above table, and their opponents score 10 points for each trick they
+			manage to win. There is no extra score for any additional tricks the contractors may make in excess of their bid,
+			except when they win every trick, which is called a slam. If the contractors make a slam, and their bid was
+			worth less than 250 points, they score 250 instead of their bid. If the bid was worth more than 250 (8 clubs or
+			more) there is no special score for a slam - if the contractors win every trick they just win the value of their bid as
+			normal.
+			If the contractors do not take enough tricks for their suit or no trump contract, they score minus the value of the
+			contract, and their opponents still score 10 points for each trick they won.
+		 */
+	}
+	
+	/**
+	 * Checks if game is over (a score of 500 is reached).
+	 * @return true if game is over, false otherwise.
+	 */
+	public boolean isGameOver()
+	{
+		return false;
+	}
+
+	
+	
+	/**
+	 * Gets a player name.
+	 * @param pIndex The index of the player
+	 * @return The name of the player at index pIndex
+	 */
+	public String getPlayer(int pIndex)
+	{
+		return aPlayers[pIndex].getName();
+	}
+	
+	/**
+	 * Gets the current trick.
+	 * @return A String representation of the trick being played.
+	 */
+	public String getCurrentTrick()
+	{
+		return aCurrentTrick.toString();
+	}
+
+	/**
+	 * Gets the current turn.
+	 * @return The index of the player whose turn it is.
+	 */
+	public int getTurn()
+	{
+		return aTurn;
+	}
+
+	/**
+	 * Gets the dealer's name.
+	 * @return The name of the dealer.
+	 */
+	public String getDealer()
+	{
+		return aPlayers[aDealer].getName();
+	}
+
+	/**
+	 * Returns the bid of the specified player.
+	 * @param pIndex The index of the player.
+	 * @pre 0 <= pIndex <= 3.
+	 * @return A string representation of player pIndex's bid.
+	 */
+	public String getBid(int pIndex)
+	{
+		assert pIndex >=0 && pIndex <= 3;
+		return aBids[pIndex].toString();
+	}
+
+	/**
+	 * Gets the contract.
+	 * @return A string representation of the current contract.
+	 */
+	public String getContract()
+	{
+		return aContract.toString();
+	}
+
+	/**
+	 * Gets the contract holder.
+	 * @return the index of the player holding the contract.
+	 */
+	public int getContractHolder()
+	{
+		return aContractHolder;
+	}
+	
+	/**
+	 * Gets a player's hand as a string.
+	 * @param pIndex The index of the player.
+	 * @return A string representation of the player's hand.
+	 */
+	public String getHand(int pIndex)
+	{
+		return aPlayers[pIndex].getHandString();
+	}
+
+	/**
+	 * Gets the widow.
+	 * @return A string representation of the widow
+	 */
+	public String getWidow()
+	{
+		return aWidow.toString();
+	}
+
+	/**
+	 * Gets the number of tricks played.
+	 * @return The tricks played since the last call to newGame().
+	 */
+	public int getTricksPlayed()
+	{
+		return aTricksPlayed;
+	}
+
+	/**
+	 * Gets the number of games played.
+	 * @return The number of games played so far.
+	 */
+	public int getGamesPlayed()
+	{
+		return aGamesPlayed;
+	}
+	
+	/**
+	 * Gets the last card played.
+	 * @return The most recently played card.
+	 */
+	public Card getLastCardPlayed()
+	{
+		return aCurrentTrick.getLast();
+	}
+	
+	/**
+	 * Gets the name of the player who won the most recent trick.
+	 * @return The name of the player.
+	 */
+	public String getTrickWinner()
+	{
+		return aPlayers[aTrickWinner].getName();
+	}
+	
+}
